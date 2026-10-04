@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>webapi_erc20 分析報告 20261001_20</title>
+<style>
+:root{--bg:#f7f7f5;--card:#fff;--text:#1f2328;--muted:#656d76;--line:#d8dee4;--accent:#2f6fed;--hi:#d1242f;--mid:#c27803;--lo:#1a7f37;--code:#eef1f4}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a21;--text:#e6e8eb;--muted:#9aa4af;--line:#2b313b;--accent:#6ea0ff;--hi:#ff7b72;--mid:#e3b341;--lo:#56d364;--code:#222833}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 -apple-system,"Segoe UI","Microsoft JhengHei",sans-serif}
+.wrap{max-width:1040px;margin:0 auto;padding:24px 16px 64px}
+header h1{margin:0 0 4px;font-size:26px}
+header p{margin:0;color:var(--muted)}
+nav{position:sticky;top:0;background:var(--bg);padding:10px 0;border-bottom:1px solid var(--line);margin:16px 0;display:flex;flex-wrap:wrap;gap:6px 16px;z-index:5}
+nav a{color:var(--accent);text-decoration:none;font-size:14px}
+h2{margin:36px 0 12px;font-size:20px;border-left:4px solid var(--accent);padding-left:10px}
+h3{margin:22px 0 8px;font-size:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:10px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.stat b{display:block;font-size:22px}
+.stat span{color:var(--muted);font-size:13px}
+.tblwrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{background:var(--code);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+code{background:var(--code);padding:1px 6px;border-radius:4px;font:13px Consolas,monospace;word-break:break-all}
+.m{font-weight:700;font-size:12px;padding:2px 8px;border-radius:99px;color:#fff;white-space:nowrap}
+.GET{background:#1a7f37}.POST{background:#2f6fed}
+.tag{font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;border:1px solid currentColor;white-space:nowrap}
+.hi{color:var(--hi)}.mid{color:var(--mid)}.lo{color:var(--lo)}
+ol.issues{padding-left:0;list-style:none;margin:0}
+ol.issues li{background:var(--card);border:1px solid var(--line);border-left-width:4px;border-radius:8px;padding:10px 14px;margin:8px 0}
+ol.issues li.hi{border-left-color:var(--hi)}ol.issues li.mid{border-left-color:var(--mid)}ol.issues li.lo{border-left-color:var(--lo)}
+ol.issues li b{color:var(--text)}
+ol.issues li{color:var(--text)}
+.phase ol{margin:6px 0;padding-left:22px}
+.note{color:var(--muted);font-size:13px;margin-top:24px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>webapi_erc20 分析報告</h1>
+  <p>報告時間:2026-10-01 20 時 ・ 技術棧:Go、gin、gorm(MySQL)、go-ethereum、robfig/cron</p>
+</header>
+<nav>
+  <a href="#overview">概觀</a><a href="#api">API 清單</a><a href="#cron">背景排程</a><a href="#issues">問題與風險</a><a href="#advice">優化建議</a><a href="#summary">風險總結</a>
+</nav>
+
+<h2 id="overview">1. 專案概觀</h2>
+<div class="card">簡易 ERC20 錢包服務,採 MVC 分層(controller → service → dao)。對外提供 <b>4 支 HTTP API</b>,另有 <b>2 支背景排程</b>(啟動時由 <code>service.RunCron()</code> 註冊),負責掃描鏈上區塊與確認交易。資料表:<code>address</code>、<code>tokens</code>、<code>block_height</code>、<code>transaction</code>、<code>withdraw</code>。</div>
+<div class="grid">
+  <div class="card stat"><b>4</b><span>HTTP API</span></div>
+  <div class="card stat"><b>2</b><span>啟用中排程(通知排程停用)</span></div>
+  <div class="card stat"><b>5</b><span>資料表</span></div>
+  <div class="card stat"><b>23</b><span>發現問題</span></div>
+  <div class="card stat"><b>8888</b><span>服務埠</span></div>
+</div>
+
+<h2 id="api">2. HTTP API 清單(前綴 /v1)</h2>
+<div class="tblwrap"><table>
+<thead><tr><th>#</th><th>方法</th><th>路徑</th><th>Controller</th><th>用途</th><th>主要參數</th><th>流程摘要</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><span class="m POST">POST</span></td><td><code>/v1/address</code></td><td><code>AddressCreate</code></td><td>建立錢包地址</td><td>Body:<code>merchant_id</code>、<code>chain_type</code>(須為 ETH)</td><td>驗證商戶 → 產生金鑰對 → 地址寫入 DB → 回傳地址、<b>私鑰</b>、公鑰</td></tr>
+<tr><td>2</td><td><span class="m GET">GET</span></td><td><code>/v1/:address/balance/:cryptoType</code></td><td><code>GetBalance</code></td><td>查詢錢包餘額(ETH / ERC20)</td><td>Path:<code>address</code>、<code>cryptoType</code>;Query:<code>chain_type=ETH</code></td><td>驗證地址 → ETH 走原生 <code>BalanceAt</code>;其他幣種查 DB 取合約/ABI → 呼叫 <code>balanceOf</code> → 依 decimals 換算</td></tr>
+<tr><td>3</td><td><span class="m POST">POST</span></td><td><code>/v1/withdraw</code></td><td><code>Withdraw</code></td><td>轉帳(ETH / ERC20 提幣)</td><td>Body:<code>merchant_id</code>、<code>crypto_type</code>、<code>chain_type</code>、<code>secret_key</code>、<code>from_address</code>、<code>to_address</code>、<code>amount</code>、<code>memo</code></td><td>驗證 → 查 token 設定 → 估算 gas → 簽章 → 廣播上鏈 → 寫入 <code>withdraw</code> → 回傳 <code>tx_hash</code></td></tr>
+<tr><td>4</td><td><span class="m GET">GET</span></td><td><code>/v1/tx/:txHash</code></td><td><code>GetTxHash</code></td><td>查詢交易明細與狀態</td><td>Path:<code>txHash</code>;Query:<code>crypto_type</code>、<code>chain_type</code></td><td>先查 <code>transaction</code>(已掃描到);查無則查 <code>withdraw</code>(回「待確認」,區塊高度/手續費為 0);都無回 TxNotFound</td></tr>
+</tbody></table></div>
+
+<h2 id="cron">3. 背景排程(每 5 分鐘)</h2>
+<div class="tblwrap"><table>
+<thead><tr><th>排程</th><th>函式</th><th>用途</th><th>狀態</th></tr></thead>
+<tbody>
+<tr><td>監聽區塊</td><td><code>RunListenBlock</code></td><td>比對 DB 高度與鏈上最新高度,逐塊掃描 ETH 轉帳與 ERC20 <code>Transfer</code> 事件,僅保留與本服務地址有關的交易(判斷充幣/提幣)寫入 <code>transaction</code>,高度 +1。遞迴追到最新;<code>DelayIfStillRunning</code> 避免重疊</td><td><span class="tag lo">啟用</span></td></tr>
+<tr><td>確認交易</td><td><code>RunTransactionConfirm</code></td><td>取待確認且區塊高度 ≤ 最新高度 − 12 的交易(最多 20 筆),取 receipt 設成功/失敗、手續費、確認數,並標記待通知</td><td><span class="tag lo">啟用</span></td></tr>
+<tr><td>通知商戶</td><td><code>RunTransactionNotify</code></td><td>將完成的交易通知商戶 URL</td><td><span class="tag mid">已註解停用</span></td></tr>
+</tbody></table></div>
+
+<h2 id="issues">4. 問題與風險</h2>
+<h3 class="hi">🔴 高:安全性</h3>
+<ol class="issues">
+<li class="hi"><b>1. 私鑰外洩風險</b>:<code>POST /v1/address</code> 直接回傳私鑰、DB 不存私鑰;<code>/withdraw</code> 要求 Body 帶 <code>secret_key</code>,明文傳遞,且 <code>sendTransactionByETH/ByToken</code> 會 <code>logs.Debugf("req:%+v")</code> 把含私鑰的整個請求寫進日誌。</li>
+<li class="hi"><b>2. 設定檔機密進版控</b>:<code>config.yaml</code> 含 Infura Key(Sepolia 與 mainnet)、DB 帳密(root/1234)、JWT 金鑰,請視為已洩漏並重新核發。編譯產物 <code>webapi_erc20.exe</code> 也在專案中。</li>
+<li class="hi"><b>3. 所有 API 無認證/授權</b>:設定檔有 <code>auth</code> 區塊但路由未掛任何中介層,任何人皆可提幣、建地址。</li>
+<li class="hi"><b>4. 未驗證金鑰與地址匹配</b>:未檢查 <code>secret_key</code> 與 <code>from_address</code> 是否對應,也未檢查地址是否為本服務產生、商戶是否擁有。</li>
+<li class="hi"><b>5. 主網/測試網混用</b>:<code>redis.url</code> 放 Sepolia 節點、<code>node_bk.url</code> 放 mainnet,欄位命名混亂,易誤送主網。</li>
+</ol>
+<h3 class="mid">🟠 中:正確性與一致性</h3>
+<ol class="issues">
+<li class="mid"><b>6. DB 交易未生效</b>:<code>createTransAndUpdateBlockHeight</code> 先 <code>SqlSession.Begin()</code>,但寫入使用全域 <code>SqlSession</code> 的 repository,並不在該交易內,<code>Rollback</code> 無作用,可能出現交易已寫入但高度未前進而重複掃描。</li>
+<li class="mid"><b>7. 先上鏈後寫 DB、無冪等</b>:寫 DB 失敗時鏈上已送出但 API 回錯誤,呼叫端重送會重複轉帳。</li>
+<li class="mid"><b>8. Nonce 競態</b>:使用 <code>PendingNonceAt</code>,同地址併發提幣會取到相同 nonce。</li>
+<li class="mid"><b>9. 錯誤被吞掉</b>:<code>runListenBlock</code> 任何錯誤僅 <code>Debugf</code> 後 return;壞區塊整塊跳過,無告警。</li>
+<li class="mid"><b>10. <code>getETHFromAddr</code> 無 default</b>:未知交易類型回傳零地址,chainID 檢查被註解掉。</li>
+<li class="mid"><b>11. 確認流程脆弱</b>:單筆錯誤即整批中止;只看區塊高度差 ≥ 12,未處理 reorg。</li>
+<li class="mid"><b>12. 遞迴掃描</b>:<code>runListenBlock()</code> 遞迴,落後很多時可能深層遞迴,應改迴圈;<code>&lt;=</code> 判斷會多打一次節點。</li>
+<li class="mid"><b>13. 節點連線問題</b>:Dial 失敗直接返回不試下一個節點;全部 ping 失敗仍回傳 client 且 err 為 nil;每次新建連線且從不 <code>Close</code>,造成連線洩漏。</li>
+<li class="mid"><b>14. 輸入驗證不足</b>:<code>amount</code> 未檢查為正數與精度;<code>txHash</code> 未驗格式。</li>
+<li class="mid"><b>15. 回應碼語意不當</b>:所有失敗回 400;<code>ShouldBindJSON</code> 失敗回 <code>CodeInternalError</code>。</li>
+<li class="mid"><b>16. 缺少索引/唯一鍵</b>:<code>wallet_eth.sql</code> 除主鍵外無索引(<code>tx_hash</code>、<code>address</code>、<code>status+block_height</code>、<code>notify_status</code>),<code>tx_hash</code> 無唯一約束(若靠 gorm tag 建立請確認實際表結構)。</li>
+</ol>
+<h3 class="lo">🟡 低:效能與可維護性</h3>
+<ol class="issues">
+<li class="lo"><b>17. N+1 查詢</b>:每筆 <code>Value&gt;0</code> 交易做 2 次 <code>GetByAddress</code> + 1 次 <code>isNewTransaction</code>;每個 Transfer log 單獨 <code>GetTransactionByHash</code>。</li>
+<li class="lo"><b>18. 重複查詢與解析</b>:每塊重查兩次 token 清單,每次 <code>getAmount</code> 重新解析 ABI。</li>
+<li class="lo"><b>19. 日誌問題</b>:多數錯誤用 <code>Debugf</code>,正式環境看不到;<code>dao.ConnectUrl</code> 會印出含密碼的 DB URL。</li>
+<li class="lo"><b>20. 程式整潔</b>:大量註解舊碼、<code>transaction_service.go</code> 單檔 830 行、可用 <code>strings.Contains</code>。</li>
+<li class="lo"><b>21. 測試不足</b>:僅 <code>address_test.go</code>、<code>reflect_test.go</code>,核心流程無測試。</li>
+<li class="lo"><b>22. 連線池</b>:<code>SetMaxOpenConns(300)</code> 對單機 MySQL 偏大。</li>
+<li class="lo"><b>23. Gin 設定</b>:<code>gin.Default()</code> + debug 模式,缺 release、request-id、限流、超時、graceful shutdown。</li>
+</ol>
+
+<h2 id="advice">5. 優化建議(建議執行順序)</h2>
+<div class="card phase"><h3>第一階段:先處理安全(立即)</h3><ol>
+<li>撤銷並重新核發 Infura Key、更換 DB 密碼;機密改用環境變數或 Secret 管理,<code>config.yaml</code> 只留範本並加入 <code>.gitignore</code>,同時從 git 歷史清除。</li>
+<li>移除 <code>webapi_erc20.exe</code> 與 <code>log/</code> 的版控。</li>
+<li>所有路由加認證(JWT 或 API Key + HMAC)與商戶授權;<code>/withdraw</code> 加 IP 白名單與限流。</li>
+<li>私鑰改由伺服器端加密保管(KMS/HSM 或至少 AES 加密入庫),提幣只傳 <code>from_address</code>,由服務端簽章;建立地址不回傳私鑰。若維持現行設計,至少全程 HTTPS 並遮罩日誌。</li>
+<li>日誌遮罩敏感欄位(私鑰、密碼、含密 URL)。</li>
+</ol></div>
+<div class="card phase"><h3>第二階段:資金正確性</h3><ol start="6">
+<li>修正 DB 交易:repository 接受 <code>*gorm.DB</code> 或使用 <code>SqlSession.Transaction(...)</code>,讓寫入交易與更新區塊高度在同一 transaction。</li>
+<li>提幣冪等與狀態機:先寫 <code>withdraw</code>(<code>pending</code>、唯一 <code>request_id</code>)→ 簽章廣播 → 更新 <code>tx_hash</code>/狀態。</li>
+<li>Nonce 管理:每地址互斥鎖或自維護 nonce 表,支援卡單加價重送。</li>
+<li><code>tx_hash</code> 加唯一索引;補 <code>address.address</code>、<code>transaction(status, block_height)</code>、<code>transaction(notify_status)</code>、<code>withdraw.tx_hash</code> 索引。</li>
+<li>確認邏輯:單筆失敗 <code>continue</code> 並記錄;確認前驗證區塊 hash 仍在主鏈以處理 reorg。</li>
+</ol></div>
+<div class="card phase"><h3>第三階段:穩定性與效能</h3><ol start="11">
+<li>共用單一 <code>ethclient</code>(可重連、多節點 failover、結束 <code>Close</code>)。</li>
+<li>掃描改迴圈 + 批次:收集區塊內所有地址以 <code>IN (...)</code> 查詢,或將「我方地址」載入記憶體集合;ERC20 用 <code>FilterLogs</code> 一次抓區間事件。</li>
+<li>token 清單與 ABI 解析結果做快取。</li>
+<li>考慮以 WebSocket <code>SubscribeNewHead</code> 取代 5 分鐘輪詢;確認 12 個區塊約 2.5 分鐘,5 分鐘輪詢會讓延遲再加倍。</li>
+<li>啟用 <code>RunTransactionNotify</code> 前補上重試、退避、簽章與冪等,並與確認流程解耦。</li>
+</ol></div>
+<div class="card phase"><h3>第四階段:程式品質</h3><ol start="16">
+<li>統一回應碼:400 / 401 / 404 / 500 / 502 語意分明。</li>
+<li>強化驗證:金額 &gt; 0 與精度、EIP-55 checksum 地址(<code>common.IsHexAddress</code>)、txHash 格式。</li>
+<li>拆分 <code>transaction_service.go</code>(scanner / confirmer / notifier),刪除註解舊碼。</li>
+<li>補單元與整合測試(Sepolia 或 simulated backend)。</li>
+<li>正式環境:<code>gin.SetMode(release)</code>、graceful shutdown、<code>/healthz</code>、Prometheus metrics、告警(區塊落後數、待確認筆數、節點失敗率)。</li>
+<li>加入 Dockerfile 與 CI(<code>go vet</code>、<code>staticcheck</code>、<code>gosec</code>、<code>go test</code>)。</li>
+</ol></div>
+
+<h2 id="summary">6. 風險總結</h2>
+<div class="tblwrap"><table>
+<thead><tr><th>面向</th><th>評級</th><th>說明</th></tr></thead>
+<tbody>
+<tr><td>安全性</td><td><span class="tag hi">高</span></td><td>無認證、私鑰明文傳輸且可能入日誌、機密進版控</td></tr>
+<tr><td>資金正確性</td><td><span class="tag hi">中高</span></td><td>無冪等、nonce 競態、DB 交易未生效</td></tr>
+<tr><td>穩定性</td><td><span class="tag mid">中</span></td><td>連線洩漏、單點節點、錯誤吞掉</td></tr>
+<tr><td>效能</td><td><span class="tag lo">中低</span></td><td>逐筆查 DB、輪詢延遲</td></tr>
+<tr><td>可維護性</td><td><span class="tag lo">中低</span></td><td>單檔過大、測試少</td></tr>
+</tbody></table></div>
+
+<p class="note">本報告基於靜態閱讀程式碼,未實際執行;<code>common/ethereum/transaction.go</code>(gas 估算、簽章細節)與各 repository 僅做重點檢視,建議高風險項目修正後再做一次深入檢視。</p>
+</div>
+</body>
+</html>
